@@ -1,0 +1,63 @@
+tool_id: dapt_ncs_esc2022
+title_tr: "DAPT (Aspirin + P2Y12) kullanan hastada NCS öncesi yönetim"
+
+questions:
+  - id: high_bleeding_risk_ncs
+    text_tr: "NCS’ye bağlı yüksek kanama riski var mı?"
+    type: choice
+    options: ["Evet", "Hayır"]
+
+  - id: pci_lt_1m
+    text_tr: "PCI zamanı <1 ay mı?"
+    type: choice
+    options: ["Evet", "Hayır"]
+    visible_if: { high_bleeding_risk_ncs: "Evet" }
+
+  - id: acs_lt_3m
+    text_tr: "ACS zamanı <3 ay mı?"
+    type: choice
+    options: ["Evet", "Hayır"]
+    visible_if: { high_bleeding_risk_ncs: "Evet" }
+
+  - id: high_stent_thrombosis_risk
+    text_tr: "Yüksek perioperatif stent trombozu riski var mı?"
+    type: choice
+    options: ["Evet", "Hayır"]
+    visible_if: { high_bleeding_risk_ncs: "Evet" }
+
+  - id: can_defer_ncs
+    text_tr: "Cerrahi ertelenebilir mi?"
+    type: choice
+    options: ["Evet", "Hayır"]
+    visible_if: { high_bleeding_risk_ncs: "Evet" }
+
+  - id: p2y12_agent
+    text_tr: "P2Y12 inhibitörü hangisi?"
+    type: choice
+    options: ["Klopidogrel", "Prasugrel", "Tikagrelor"]
+    visible_if: { high_bleeding_risk_ncs: "Evet", can_defer_ncs: "Hayır" }
+
+outputs:
+  - id: continue_dapt
+    when: "high_bleeding_risk_ncs=='Hayır'"
+    recommendation_tr: "Yüksek kanama riski yok: DAPT’ye devam uygundur."
+    class: "ESC Figür 5"
+
+  - id: continue_aspirin
+    when: "high_bleeding_risk_ncs=='Evet' and high_thrombotic_risk=='Hayır'"
+    recommendation_tr: "Yüksek kanama riski var, trombotik risk yüksek değil: Aspirine devam (Class I). P2Y12 inhibitörü perioperatif dönemde kesilmesi planlanır."
+    class: "Class I"
+
+  - id: defer_ncs
+    when: "high_bleeding_risk_ncs=='Evet' and high_thrombotic_risk=='Evet' and can_defer_ncs=='Evet'"
+    recommendation_tr: "Yüksek kanama + yüksek trombotik risk: NCS’yi ertele (Class I)."
+    class: "Class I"
+
+  - id: time_sensitive_interrupt_p2y12
+    when: "high_bleeding_risk_ncs=='Evet' and high_thrombotic_risk=='Evet' and can_defer_ncs=='Hayır'"
+    recommendation_tr: >
+      Time-sensitive NCS: ASA sürdürülerek P2Y12 inhibitörü kesilir (Class I).
+      Kesme süresi: Tikagrelor 3–5 gün; Klopidogrel 5 gün; Prasugrel 7 gün.
+      Seçilmiş olgularda IV antiplatelet (GPI veya cangrelor) ile bridging düşünülebilir.
+      Yeniden başlama: multidisipliner değerlendirme ile mümkünse 48 saat içinde planlanır.
+    class: "Class I; Class IIa/IIb"
