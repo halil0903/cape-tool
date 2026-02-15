@@ -200,7 +200,6 @@ def get_device_management_note(has_device: str, device_type: str, pace_dependent
             return "- Cihaz: Permanent pacemaker. **Pace bağımlı** → **VOO 80 bpm** moduna alınmalı (perioperatif plan).\n"
         return "- Cihaz: Permanent pacemaker. Pace bağımlı değil → **VVI 40 bpm** alınmalı (perioperatif plan).\n"
 
-    # ICD or CRT
     if pd == "Evet":
         return f"- Cihaz: {dt}. **Pace bağımlı** → **Taşi-terapiler kapatılmalı** + **VOO 80 bpm** moduna alınmalı.\n"
     return f"- Cihaz: {dt}. Pace bağımlı değil → **Taşi-terapiler kapatılmalı** + **VVI 40 bpm** alınmalı.\n"
@@ -355,27 +354,32 @@ def get_postop_af_risk_text(age: int, has_hf: str, has_ckd: str, surgery_risk: s
 
 
 # ----------------------------
-# Monotherapy preop plan (USER REQUEST - INVERTED LOGIC)
-# - Bleeding risk LOW/MID  -> CONTINUE
-# - Bleeding risk HIGH     -> STOP: ASA 7 days, Clopidogrel 5 days
-# Bleeding risk proxy: Table-5 surgery_risk == "Yüksek" means HIGH.
+# Antiplatelet monotherapy preop plan (ASA/Klopidogrel)
+# - Düşük/Orta risk -> CONTINUE
+# - Yüksek risk     -> STOP: ASA 7 days, Clopidogrel 5 days
 # ----------------------------
-def get_monotherapy_preop_plan(mono_agent: str, surgery_risk: str) -> str:
-    agent = (mono_agent or "").strip()
-
-    # Düşük/Orta risk -> continue
+def get_antiplatelet_monotherapy_preop_plan(agent: str, surgery_risk: str) -> str:
+    a = (agent or "").strip()
     if surgery_risk in {"Düşük", "Orta"}:
-        return f"- Monoterapi ({agent}): Cerrahi kanama riski **düşük/orta** → **ilaç devamı önerilir (kesilmez).**"
-
-    # Yüksek risk -> stop by agent
+        return f"- Antiplatelet monoterapi ({a}): Cerrahi kanama riski **düşük/orta** → **ilaç devamı önerilir (kesilmez).**"
     if surgery_risk == "Yüksek":
-        if agent == "Aspirin":
-            return "- Monoterapi (Aspirin): Cerrahi kanama riski **yüksek** → **operasyondan 7 gün önce kes.**"
-        if agent == "Klopidogrel":
-            return "- Monoterapi (Klopidogrel): Cerrahi kanama riski **yüksek** → **operasyondan 5 gün önce kes.**"
-        return "- Monoterapi: Ajan belirtilmedi (yüksek kanama riski)."
+        if a == "Aspirin":
+            return "- Antiplatelet monoterapi (Aspirin): Cerrahi kanama riski **yüksek** → **operasyondan 7 gün önce kes.**"
+        if a == "Klopidogrel":
+            return "- Antiplatelet monoterapi (Klopidogrel): Cerrahi kanama riski **yüksek** → **operasyondan 5 gün önce kes.**"
+        return "- Antiplatelet monoterapi: Ajan belirtilmedi (yüksek kanama riski)."
+    return "- Antiplatelet monoterapi: Cerrahi kanama riski belirlenemedi."
 
-    return "- Monoterapi: Cerrahi kanama riski belirlenemedi."
+
+# ----------------------------
+# OAC monotherapy preop plan is handled by Tool-2 (OacRuleEngine)
+# Here we only provide a UI hint line.
+# ----------------------------
+def get_oac_monotherapy_hint(oac_agent: str) -> str:
+    a = (oac_agent or "").strip()
+    if not a or a == "Bilinmiyor":
+        return "- OAC monoterapi: Ajan seçilmedi → **Warfarin/Apiksaban/Rivaroksaban/Dabigatran/Edoksaban** seçeneklerinden biri seçilmeli."
+    return f"- OAC monoterapi: **{a}** (kesme/bridging/yeniden başlama planı Tool-2’ye göre oluşturulur)."
 
 
 # ----------------------------
@@ -464,27 +468,38 @@ def generate_consultation_note(context: dict, dapt_result: dict, oac_text_block:
     )
 
     # ----------------------------
-    # Antiplatelet block (DAPT vs Monotherapy)
+    # Antithrombotic blocks (DAPT vs Monotherapy)
     # ----------------------------
-    ant_strategy = context.get("antiplatelet_strategy", "—")
+    ant_strategy = context.get("antithrombotic_strategy", "—")
     pci_time = context.get("pci_time", "—")
-    mono_agent = context.get("mono_agent", "—")
 
-    if ant_strategy == "Monoterapi":
-        mono_plan = get_monotherapy_preop_plan(mono_agent, context.get("surgery_risk"))
-        antiplatelet_block = "\n".join(
+    if ant_strategy == "Monoterapi-OAC":
+        oac_mono_agent = context.get("mono_oac_agent", "Bilinmiyor")
+        antithrombotic_block = "\n".join(
             [
-                "F1) Antiplatelet Tedavi",
+                "F1) Antitrombotik Tedavi",
                 f"- PCI zamanı: {pci_time}",
-                "- Strateji: Monoterapi",
-                f"- Ajan: {mono_agent}",
-                mono_plan,
+                "- Strateji: Monoterapi (OAC)",
+                f"- Ajan: {oac_mono_agent}",
+                get_oac_monotherapy_hint(oac_mono_agent),
+            ]
+        )
+    elif ant_strategy == "Monoterapi-AP":
+        ap_agent = context.get("mono_ap_agent", "Bilinmiyor")
+        ap_plan = get_antiplatelet_monotherapy_preop_plan(ap_agent, context.get("surgery_risk"))
+        antithrombotic_block = "\n".join(
+            [
+                "F1) Antitrombotik Tedavi",
+                f"- PCI zamanı: {pci_time}",
+                "- Strateji: Monoterapi (Antiplatelet)",
+                f"- Ajan: {ap_agent}",
+                ap_plan,
             ]
         )
     elif ant_strategy == "DAPT (Tool-1)":
-        antiplatelet_block = "\n".join(
+        antithrombotic_block = "\n".join(
             [
-                "F1) Antiplatelet Tedavi",
+                "F1) Antitrombotik Tedavi",
                 f"- PCI zamanı: {pci_time}",
                 "- Strateji: DAPT (Tool-1)",
                 f"- Aspirin: {context.get('aspirin_dose')}",
@@ -492,9 +507,9 @@ def generate_consultation_note(context: dict, dapt_result: dict, oac_text_block:
             ]
         )
     else:
-        antiplatelet_block = "\n".join(
+        antithrombotic_block = "\n".join(
             [
-                "F1) Antiplatelet Tedavi",
+                "F1) Antitrombotik Tedavi",
                 "- Strateji: Belirtilmedi / uygulanmadı.",
             ]
         )
@@ -529,7 +544,7 @@ E) Klinik Değerlendirme (perioperatif kritik noktalar)
 {device_note}
 
 F) Antitrombotik Yönetim
-{antiplatelet_block}
+{antithrombotic_block}
 
 {oac_text_block}
 
@@ -624,13 +639,14 @@ with st.expander("1) Hasta Yaş, Cerrahi ve Klinik Bilgiler", expanded=True):
     has_ht = st.selectbox("Hipertansiyon", ["Hayır", "Evet"])
 
     # ----------------------------
-    # CAD/PCI + 1 year branching + monotherapy agent
+    # CAD/PCI + ≥1 year branching with AF-aware monotherapy
     # ----------------------------
     has_cad = st.selectbox("Koroner arter hastalığı / PCI öyküsü", ["Hayır", "Evet"])
 
     pci_time = "—"
-    antiplatelet_strategy = "—"
-    mono_agent = "—"
+    antithrombotic_strategy = "—"   # "DAPT (Tool-1)" | "Monoterapi-AP" | "Monoterapi-OAC" | "—"
+    mono_ap_agent = "—"
+    mono_oac_agent = "Bilinmiyor"
 
     if has_cad == "Evet":
         pci_time = st.selectbox(
@@ -639,15 +655,34 @@ with st.expander("1) Hasta Yaş, Cerrahi ve Klinik Bilgiler", expanded=True):
             index=0,
             key="pci_time",
         )
-        if pci_time == "<1 yıl":
-            antiplatelet_strategy = "DAPT (Tool-1)"
-            mono_agent = "—"
-        else:
-            antiplatelet_strategy = "Monoterapi"
-            mono_agent = st.selectbox("Monoterapi ajanı", ["Aspirin", "Klopidogrel"], index=0, key="mono_agent")
 
-            st.markdown("**Monoterapi – Preop Plan (Önizleme)**")
-            st.info(get_monotherapy_preop_plan(mono_agent, surgery_risk))
+        if pci_time == "<1 yıl":
+            antithrombotic_strategy = "DAPT (Tool-1)"
+        else:
+            # PCI ≥1 yıl
+            if has_af == "Evet":
+                # AF (+) -> OAC monoterapi
+                antithrombotic_strategy = "Monoterapi-OAC"
+                st.markdown("### Monoterapi (AF + PCI ≥1 yıl) → OAC seçimi")
+                mono_oac_agent = st.selectbox(
+                    "OAC ajanı (monoterapi)",
+                    ["Bilinmiyor", "Warfarin", "Apiksaban", "Rivaroksaban", "Dabigatran", "Edoksaban"],
+                    index=0,
+                    key="mono_oac_agent",
+                    help="AF (+) ve PCI ≥1 yıl: antiplatelet monoterapi yerine OAC monoterapi tercih edilir.",
+                )
+                st.info(get_oac_monotherapy_hint(mono_oac_agent))
+            else:
+                # AF (-) -> antiplatelet monoterapi
+                antithrombotic_strategy = "Monoterapi-AP"
+                st.markdown("### Monoterapi (AF yok + PCI ≥1 yıl) → Aspirin/Klopidogrel")
+                mono_ap_agent = st.selectbox(
+                    "Antiplatelet monoterapi ajanı",
+                    ["Aspirin", "Klopidogrel"],
+                    index=0,
+                    key="mono_ap_agent",
+                )
+                st.info(get_antiplatelet_monotherapy_preop_plan(mono_ap_agent, surgery_risk))
 
     has_mech_valve_ui = st.selectbox("Mekanik kapak var mı?", ["Hayır", "Evet"])
 
@@ -679,7 +714,7 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
         if has_cad != "Evet":
             st.info("Koroner arter hastalığı / PCI öyküsü **Hayır** seçildiği için Tool-1 (DAPT) algoritması gizlendi.")
         else:
-            st.success("PCI/AKS üzerinden **≥1 yıl** geçtiği için **monoterapi** dalı aktif. Tool-1 (DAPT) uygulanmadı.")
+            st.success("PCI/AKS üzerinden **≥1 yıl** geçtiği için monoterapi dalı aktif. Tool-1 (DAPT) uygulanmadı.")
         aspirin_dose = "—"
         p2y12_agent_ui = "—"
     else:
@@ -726,6 +761,8 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
 # ----------------------------
 # 3) Tool-2 (OAK/NOAC)
 # ----------------------------
+# AF varsa her zaman göster; ayrıca mekanik kapakta göster.
+# Ayrıca AF + PCI≥1y dalında OAC seçildi/isteniyor: Tool-2 planını otomatik üretmek için yine göster.
 show_tool2 = (has_af == "Evet") or (has_mech_valve_ui == "Evet")
 
 oac_agent = "Bilinmiyor"
@@ -739,6 +776,9 @@ with st.expander("3) Tool-2: OAK/NOAC (AF veya mekanik kapak varsa)", expanded=s
     else:
         OAC_OPTIONS = ["Bilinmiyor", "Warfarin", "Apiksaban", "Rivaroksaban", "Edoksaban", "Dabigatran"]
 
+        # Eğer AF + PCI≥1y monoterapi-oac dalı varsa, o seçimi Tool-2 varsayılanı yapalım
+        preferred_oac = mono_oac_agent if antithrombotic_strategy == "Monoterapi-OAC" else "Bilinmiyor"
+
         if has_mech_valve_ui == "Evet":
             oac_agent = st.selectbox(
                 "Oral antikoagülan",
@@ -749,7 +789,8 @@ with st.expander("3) Tool-2: OAK/NOAC (AF veya mekanik kapak varsa)", expanded=s
                 key="oac_agent",
             )
         else:
-            oac_agent = st.selectbox("Oral antikoagülan", OAC_OPTIONS, index=0, key="oac_agent")
+            default_idx = OAC_OPTIONS.index(preferred_oac) if preferred_oac in OAC_OPTIONS else 0
+            oac_agent = st.selectbox("Oral antikoagülan", OAC_OPTIONS, index=default_idx, key="oac_agent")
 
         bleed_risk_oac = st.selectbox(
             "Prosedür kanama riski (OAK/NOAC için)",
@@ -832,32 +873,26 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
             aspirin_val = st.session_state.get("aspirin_dose", "Bilinmiyor")
             p2y12_val = st.session_state.get("p2y12_agent_ui", "Bilinmiyor")
         else:
-            # In monotherapy branch, we still fill a neutral Tool-1 section
-            if antiplatelet_strategy == "Monoterapi":
-                dapt_result = {
-                    "output_id": "mono_branch",
-                    "recommendation_tr": "Monoterapi dalı aktif (PCI ≥1 yıl). Tool-1 (DAPT) uygulanmadı.",
-                    "class": "",
-                }
-            else:
-                dapt_result = {
-                    "output_id": "tool1_hidden",
-                    "recommendation_tr": "Tool-1 (DAPT) uygulanmadı: KAH/PCI öyküsü yok veya PCI zamanı uygun değil.",
-                    "class": "",
-                }
+            # monoterapi branch -> Tool-1 neutral
+            dapt_result = {
+                "output_id": "tool1_inactive",
+                "recommendation_tr": "Tool-1 (DAPT) uygulanmadı (PCI ≥1 yıl veya KAH/PCI yok).",
+                "class": "",
+            }
             aspirin_val = "—"
             p2y12_val = "—"
 
         # ---- Device note ----
         device_note = get_device_management_note(has_device, device_type, pace_dependent)
 
-        # ---- Tool-2: AUTO evaluate on the fly ----
+        # ---- Tool-2: AUTO evaluate if visible ----
         if show_tool2:
             mapped_bleed = "Düşük-Orta" if bleed_risk_oac in ["Minör", "Düşük-Orta"] else "Yüksek"
             has_mech_valve = (has_mech_valve_ui == "Evet")
+            agent_for_eval = "Warfarin" if has_mech_valve else oac_agent
 
             oac_res = oac_engine.evaluate(
-                agent=("Warfarin" if has_mech_valve else oac_agent),
+                agent=agent_for_eval,
                 urgency=urgency,
                 bleed_risk=mapped_bleed,
                 very_high_bleed=very_high_bleed,
@@ -867,7 +902,7 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
             )
 
             dose_warnings = get_doac_dose_warnings(
-                agent=("Warfarin" if has_mech_valve else oac_agent),
+                agent=agent_for_eval,
                 age=int(patient_age or 0),
                 egfr=float(egfr or 0),
                 current_meds=current_meds,
@@ -892,11 +927,7 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
                 ]
 
             if dose_warnings:
-                base_lines += [
-                    "",
-                    "F2-Not) DOAC Doz / Kesme Uyarıları:",
-                    *[f"- {w}" for w in dose_warnings],
-                ]
+                base_lines += ["", "F2-Not) DOAC Doz / Kesme Uyarıları:", *[f"- {w}" for w in dose_warnings]]
 
             oac_block = "\n".join([l for l in base_lines if l is not None and str(l).strip() != ""])
         else:
@@ -923,8 +954,9 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
             "has_ht": has_ht,
             "has_cad": has_cad,
             "pci_time": pci_time,
-            "antiplatelet_strategy": antiplatelet_strategy,
-            "mono_agent": mono_agent,
+            "antithrombotic_strategy": antithrombotic_strategy,
+            "mono_ap_agent": mono_ap_agent,
+            "mono_oac_agent": mono_oac_agent,
             "has_mech_valve": has_mech_valve_ui,
             "has_device": has_device,
             "device_type": device_type,
@@ -936,3 +968,4 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
 
         note = generate_consultation_note(ctx, dapt_result, oac_block, device_note)
         st.text_area("Kopyalanabilir çıktı", note, height=620)
+
