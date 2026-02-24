@@ -154,6 +154,128 @@ def meds_contains_any(meds, needles_lower_set):
     return False
 
 
+# ----------------------------
+# RCRI (Revised Cardiac Risk Index) helpers
+# ESC non-cardiac surgery risk stratification integration (pragmatic, UI-friendly)
+# ----------------------------
+RCRI_ITEMS_TR = {
+    "high_risk_surgery": "Yüksek riskli cerrahi (intraperitoneal / intratorasik / suprainguinal vasküler)",
+    "ihd": "İskemik kalp hastalığı (MI/anjina/pozitif stres testi/nitrat/Q dalgası)",
+    "chf": "Kalp yetersizliği öyküsü (pulmoner ödem/PND/S3/raller vb.)",
+    "cva": "Serebrovasküler hastalık (inme/TIA)",
+    "dm_insulin": "İnsülin kullanan DM",
+    "cr_gt2": "Kreatinin >2.0 mg/dL (≈177 µmol/L)",
+}
+
+
+def calc_rcri(flags: dict) -> tuple[int, list[str]]:
+    """
+    flags: keys in RCRI_ITEMS_TR, bool values
+    returns: (score, positive_items_text)
+    """
+    positives = []
+    score = 0
+    for k, label in RCRI_ITEMS_TR.items():
+        if bool(flags.get(k, False)):
+            score += 1
+            positives.append(label)
+    return score, positives
+
+
+def esc_rcri_pathway_summary(
+    surgery_risk: str,
+    rcri_score: int,
+    functional_capacity: str,
+    symptoms: list[str],
+    urgency: str,
+    has_hf: str,
+    lvef: str,
+) -> tuple[str, list[str]]:
+    """
+    Returns:
+      - short pathway text block (flow-like)
+      - suggested work-up bullets (pragmatic)
+    Not a rigid guideline replacement; aims to reflect ESC logic:
+      - Treat unstable/active cardiac conditions first
+      - Use surgery risk + patient risk (RCRI) + functional capacity to guide testing/monitoring
+    """
+    symp = symptoms or []
+    active_symptoms = [s for s in symp if s != "Yok"]
+    has_active_cardiac_symptoms = any(s in active_symptoms for s in ["Angina", "Senkop", "Kalp yetersizliği semptomu", "Dispne"])
+
+    high_risk_surg = surgery_risk == "Yüksek"
+    intermediate_surg = surgery_risk == "Orta"
+    low_surg = surgery_risk == "Düşük"
+
+    poor_fc = functional_capacity == "<4 MET"
+    unknown_fc = functional_capacity == "Bilinmiyor"
+
+    # Active/unstable conditions heuristic
+    unstable_flag = False
+    unstable_reasons = []
+    if has_active_cardiac_symptoms:
+        unstable_flag = True
+        unstable_reasons.append("aktif kardiyak semptom")
+    if has_hf == "Evet" and lvef == "<40%":
+        # not strictly "unstable", but high-risk phenotype
+        unstable_reasons.append("HFrEF fenotipi (LVEF <40%)")
+
+    # Suggested work-up
+    workup: list[str] = []
+    pathway_lines: list[str] = []
+
+    # 0) urgency awareness
+    if urgency == "Acil":
+        pathway_lines.append("Acil cerrahi → zaman kısıtlı; sadece sonucu değiştirecek (management-changing) testler.")
+        workup.append("12 derivasyonlu ECG + klinik değerlendirme (acil).")
+    else:
+        pathway_lines.append("Elektif/Time-sensitive → ESC risk katmanlama: cerrahi risk + RCRI + fonksiyonel kapasite + semptomlar.")
+
+    # 1) Active cardiac conditions
+    if unstable_flag:
+        pathway_lines.append("Aktif/önemli semptom varsa → öncelik kardiyak stabilizasyon ve endikasyona göre ileri değerlendirme.")
+        workup.append("Kardiyoloji değerlendirmesi (management-changing yaklaşım).")
+        workup.append("Endikasyona göre TTE (özellikle KY/dispne/üfürüm/EF bilinmiyor ise).")
+        if high_risk_surg or intermediate_surg:
+            workup.append("hs-troponin bazal + postop 48–72 saat izlem (merkez protokolüne göre).")
+            workup.append("BNP/NT-proBNP (risk katmanlama için düşünülebilir).")
+        return "\n".join([f"- {x}" for x in pathway_lines]), workup
+
+    # 2) No active symptoms → proceed with risk stratification
+    if low_surg and rcri_score == 0 and functional_capacity == "≥4 MET":
+        pathway_lines.append("Düşük cerrahi risk + RCRI 0 + ≥4 MET → ek kardiyak test genellikle gerekmez.")
+        workup.append("Standart perioperatif izlem + bazal ECG (gerektiğinde).")
+        return "\n".join([f"- {x}" for x in pathway_lines]), workup
+
+    # 3) Moderate/high combos
+    if high_risk_surg or intermediate_surg or rcri_score >= 1 or poor_fc or unknown_fc:
+        pathway_lines.append(f"Risk artırıcı faktör(ler): cerrahi={surgery_risk}, RCRI={rcri_score}, MET={functional_capacity}.")
+        workup.append("12 derivasyonlu ECG (bazal).")
+
+        if high_risk_surg or intermediate_surg:
+            workup.append("hs-troponin bazal + postop 48–72 saat izlem (merkez protokolüne göre).")
+
+        # TTE triggers (pragmatic)
+        if intermediate_surg or high_risk_surg or poor_fc or unknown_fc:
+            workup.append("Klinik/endikasyona göre TTE (EF/kapak hastalığı/dispne varlığında öncelikli).")
+
+        # Biomarkers
+        if high_risk_surg or rcri_score >= 2 or (poor_fc or unknown_fc):
+            workup.append("BNP/NT-proBNP (özellikle ≥65 yaş veya orta/yüksek risk cerrahide risk katmanlama için düşünülebilir).")
+
+        # Stress testing: only if it changes management and if time allows
+        if (high_risk_surg or rcri_score >= 2) and (poor_fc or unknown_fc) and urgency != "Acil":
+            workup.append("Efor kapasitesi düşük/bilinmiyor + yüksek/orta risk: sadece sonucu değiştirecekse non-invaziv iskemi testi düşünülebilir.")
+
+        pathway_lines.append("Test seçimi: sadece sonucu/tedaviyi değiştirecek (management-changing) ise.")
+        return "\n".join([f"- {x}" for x in pathway_lines]), workup
+
+    # default fallback
+    pathway_lines.append("Düşük-orta risk profil → klinik değerlendirme + bazal ECG ile proceed.")
+    workup.append("12 derivasyonlu ECG (bazal).")
+    return "\n".join([f"- {x}" for x in pathway_lines]), workup
+
+
 def get_mech_valve_warfarin_note() -> str:
     return "\n".join(
         [
@@ -202,7 +324,7 @@ def get_device_management_note(has_device: str, device_type: str, pace_dependent
 
     if pd == "Evet":
         return f"- Cihaz: {dt}. **Pace bağımlı** → **Taşi-terapiler kapatılmalı** + **VOO 80 bpm** moduna alınmalı.\n"
-    return f"- Cihaz: {dt}. Pace bağımlı değil → **Taşi-terapiler kapatılmalı** + **VVI 40 bpm** alınmalı.\n"
+    return f"- Cihaz: {dt}. Pace bağımlı değil → **Taşi-terapiler kapatılmalı** + **VVI 40 bpm** moduna alınmalı.\n"
 
 
 def get_bradycardia_meds_note(hr: int, has_hf: str, current_meds: list[str]) -> str:
@@ -385,7 +507,15 @@ def get_oac_monotherapy_hint(oac_agent: str) -> str:
 # ----------------------------
 # Consultation note generator
 # ----------------------------
-def generate_consultation_note(context: dict, dapt_result: dict, oac_text_block: str, device_note: str) -> str:
+def generate_consultation_note(
+    context: dict,
+    dapt_result: dict,
+    oac_text_block: str,
+    device_note: str,
+    rcri_block: str,
+    esc_pathway_block: str,
+    esc_workup_block: str,
+) -> str:
     today = datetime.now().strftime("%d.%m.%Y")
     hr_val = int(context.get("hr", 0) or 0)
 
@@ -429,32 +559,6 @@ def generate_consultation_note(context: dict, dapt_result: dict, oac_text_block:
     if context.get("has_device") == "Evet":
         comorb.append(f"Kardiyak cihaz ({context.get('device_type')})")
     comorb_text = ", ".join(comorb) if comorb else "Belirtilmedi"
-
-    tests = ["12 derivasyonlu ECG (bazal)"]
-    if context.get("surgery_risk") in ["Orta", "Yüksek"] or context.get("functional_capacity") in ["<4 MET", "Bilinmiyor"]:
-        tests.append("Bazal hs-troponin (ve merkez protokolüne göre postop seri izlem)")
-    if context.get("has_hf") == "Evet" or context.get("surgery_risk") in ["Orta", "Yüksek"]:
-        tests.append("Gereğinde TTE (klinik/endikasyona göre)")
-    if context.get("has_hf") == "Evet":
-        tests.append("BNP/NT-proBNP (risk katmanlaması için düşünülebilir)")
-    tests_text = "\n".join([f"- {t}" for t in tests])
-
-    monitoring = [
-        "İntraoperatif hemodinamik yakın izlem (TA, nabız, SpO₂).",
-        "Postop dönemde aritmi/iskemi açısından klinik + ECG izlem.",
-    ]
-    if context.get("surgery_risk") in ["Orta", "Yüksek"]:
-        monitoring.append("Postop hs-troponin izlemi (ilk 48–72 saat, merkez pratiğine göre).")
-    monitoring.append(
-        get_postop_af_risk_text(
-            age=int(context.get("patient_age", 0) or 0),
-            has_hf=context.get("has_hf"),
-            has_ckd=context.get("has_ckd"),
-            surgery_risk=context.get("surgery_risk"),
-            hr=hr_val,
-        )
-    )
-    monitoring_text = "\n".join([f"- {m}" if not m.startswith("- ") else m for m in monitoring])
 
     meds = context.get("current_meds", [])
     meds_text = ", ".join(meds) if meds else "Belirtilmedi"
@@ -539,7 +643,16 @@ D) Kardiyak Öykü – Semptom / Fonksiyonel Kapasite
 - Semptomlar: {symptom_text}
 - Fonksiyonel kapasite: {context.get("functional_capacity")}
 
-E) Klinik Değerlendirme (perioperatif kritik noktalar)
+E) Risk Katmanlama (ESC entegrasyonlu)
+{rcri_block}
+
+ESC yaklaşım şeması (özet):
+{esc_pathway_block}
+
+Önerilen yaklaşım / test seti (management-changing prensibi):
+{esc_workup_block}
+
+E2) Klinik Değerlendirme (perioperatif kritik noktalar)
 {hf_block}{ckd_block}
 {device_note}
 
@@ -555,13 +668,7 @@ G) Kılavuz Temelli Perioperatif Antitrombotik Plan (Tool-1 / DAPT)
 H) Ritim / Hız kontrolü ve perioperatif ilaç notu
 {af_rate_control}
 
-I) Önerilen Tetkikler
-{tests_text}
-
-J) Perioperatif İzlem Önerileri
-{monitoring_text}
-
-K) Sonuç / Plan
+I) Sonuç / Plan
 - Bu çıktı karar destek amaçlıdır; nihai klinik karar ilgili hekim değerlendirmesi ve multidisipliner ekip kararı ile verilecektir.
 """.strip()
 
@@ -685,6 +792,68 @@ with st.expander("1) Hasta Yaş, Cerrahi ve Klinik Bilgiler", expanded=True):
                 st.info(get_antiplatelet_monotherapy_preop_plan(mono_ap_agent, surgery_risk))
 
     has_mech_valve_ui = st.selectbox("Mekanik kapak var mı?", ["Hayır", "Evet"])
+
+    # ----------------------------
+    # RCRI module (ESC entegrasyonu)
+    # ----------------------------
+    st.markdown("---")
+    st.subheader("RCRI (Revised Cardiac Risk Index) – ESC entegrasyonlu risk katmanlama")
+
+    # pragmatic "high-risk surgery" mapping:
+    # RCRI original: intraperitoneal/intrathoracic/suprainguinal vascular
+    # Here: approximate using ESC Table 5: "Yüksek" cerrahi risk -> high-risk surgery = True; plus user override
+    default_high_risk_surgery = (surgery_risk == "Yüksek")
+
+    colr1, colr2 = st.columns(2)
+    with colr1:
+        rcri_high_risk_surgery = st.checkbox(
+            RCRI_ITEMS_TR["high_risk_surgery"],
+            value=default_high_risk_surgery,
+            help="Yaklaşım: Table-5 yüksek riskli prosedürlerde otomatik işaretli gelir; gerekirse manuel düzeltin.",
+            key="rcri_high_risk_surgery",
+        )
+        rcri_ihd = st.checkbox(RCRI_ITEMS_TR["ihd"], value=(has_cad == "Evet"), key="rcri_ihd")
+        rcri_chf = st.checkbox(RCRI_ITEMS_TR["chf"], value=(has_hf == "Evet"), key="rcri_chf")
+    with colr2:
+        rcri_cva = st.checkbox(RCRI_ITEMS_TR["cva"], value=False, key="rcri_cva")
+        rcri_dm_insulin = st.checkbox(RCRI_ITEMS_TR["dm_insulin"], value=False, key="rcri_dm_insulin")
+        # Creatinine >2.0 mg/dL input (optional)
+        creatinine = st.number_input("Kreatinin (mg/dL) - varsa", min_value=0.0, max_value=25.0, value=0.0, step=0.1, key="creatinine")
+        rcri_cr_gt2 = bool(creatinine > 2.0)
+
+    rcri_flags = {
+        "high_risk_surgery": rcri_high_risk_surgery,
+        "ihd": rcri_ihd,
+        "chf": rcri_chf,
+        "cva": rcri_cva,
+        "dm_insulin": rcri_dm_insulin,
+        "cr_gt2": rcri_cr_gt2,
+    }
+    rcri_score, rcri_positives = calc_rcri(rcri_flags)
+
+    # Show score + quick interpretation
+    st.markdown(f"**RCRI skoru:** `{rcri_score}` / 6")
+    if rcri_positives:
+        st.caption("Pozitif kriter(ler): " + " • ".join(rcri_positives))
+    else:
+        st.caption("Pozitif kriter yok (RCRI 0).")
+
+    # ESC-style pathway preview
+    pathway_text, workup_list = esc_rcri_pathway_summary(
+        surgery_risk=surgery_risk,
+        rcri_score=rcri_score,
+        functional_capacity=functional_capacity,
+        symptoms=symptoms,
+        urgency=urgency,
+        has_hf=has_hf,
+        lvef=lvef,
+    )
+    with st.expander("ESC şeması önizleme (RCRI + MET + semptom + cerrahi risk)", expanded=False):
+        st.markdown("**Akış (özet):**")
+        st.markdown(pathway_text)
+        st.markdown("**Önerilen test/izlem (özet):**")
+        for w in workup_list:
+            st.write(f"- {w}")
 
     # Cardiac device logic
     st.markdown("---")
@@ -865,7 +1034,7 @@ with st.expander("3) Tool-2: OAK/NOAC (AF veya mekanik kapak varsa)", expanded=s
 # ----------------------------
 # 4) Konsültasyon Notu (AUTO-CALC)
 # ----------------------------
-with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=True):
+with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 + RCRI birleşik)", expanded=True):
     if st.button("Öneri + Konsültasyon Notu Oluştur", key="btn_generate_all"):
         # ---- Tool-1: auto evaluate if DAPT active ----
         if show_tool1:
@@ -933,6 +1102,27 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
         else:
             oac_block = "F2) Oral Antikoagülasyon (Tool-2 / OAK-NOAC)\n- Tool-2 uygulanmadı: AF veya mekanik kapak yok."
 
+        # ---- RCRI blocks for note ----
+        rcri_score_local, rcri_pos_local = calc_rcri(rcri_flags)
+        rcri_block = "\n".join(
+            [
+                f"- RCRI skoru: {rcri_score_local}/6",
+                ("- Pozitif kriter(ler): " + "; ".join(rcri_pos_local)) if rcri_pos_local else "- Pozitif kriter yok (RCRI 0).",
+            ]
+        )
+
+        pathway_text_local, workup_list_local = esc_rcri_pathway_summary(
+            surgery_risk=surgery_risk,
+            rcri_score=rcri_score_local,
+            functional_capacity=functional_capacity,
+            symptoms=symptoms,
+            urgency=urgency,
+            has_hf=has_hf,
+            lvef=lvef,
+        )
+        esc_pathway_block = pathway_text_local
+        esc_workup_block = "\n".join([f"- {w}" for w in workup_list_local]) if workup_list_local else "- Ek test önerisi yok."
+
         ctx = {
             "patient_age": patient_age,
             "patient_sex": patient_sex,
@@ -966,6 +1156,13 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 birleşik)", expanded=T
             "current_meds": current_meds,
         }
 
-        note = generate_consultation_note(ctx, dapt_result, oac_block, device_note)
-        st.text_area("Kopyalanabilir çıktı", note, height=620)
-
+        note = generate_consultation_note(
+            ctx,
+            dapt_result,
+            oac_block,
+            device_note,
+            rcri_block=rcri_block,
+            esc_pathway_block=esc_pathway_block,
+            esc_workup_block=esc_workup_block,
+        )
+        st.text_area("Kopyalanabilir çıktı", note, height=720)
