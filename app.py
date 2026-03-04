@@ -1,10 +1,102 @@
 # app.py
 import os
+import inspect
 from datetime import datetime
 
 import streamlit as st
+from PIL import Image, UnidentifiedImageError
+
 from core.engine import DaptRuleEngine
 from core.oac_engine import OacRuleEngine
+
+
+# ----------------------------
+# Streamlit page config (ilk st.* çağrısı)
+# ----------------------------
+st.set_page_config(
+    page_title="SynerCardioConsult",
+    page_icon="🫀",
+    layout="centered",
+)
+
+LOGO_PATH = "assets/logo.png"
+
+
+# ----------------------------
+# Streamlit image compat helpers (use_container_width / use_column_width)
+# ----------------------------
+def _image_compat(target, img_or_bytes, *, width=None, use_container_width=False):
+    """
+    Streamlit sürüm uyumu:
+    - Yeni sürümler: use_container_width
+    - Eski sürümler: use_column_width
+    """
+    sig = inspect.signature(target.image)
+    params = sig.parameters
+
+    kwargs = {}
+    if width is not None:
+        kwargs["width"] = width
+    else:
+        if use_container_width:
+            if "use_container_width" in params:
+                kwargs["use_container_width"] = True
+            elif "use_column_width" in params:
+                kwargs["use_column_width"] = True
+
+    return target.image(img_or_bytes, **kwargs)
+
+
+def safe_show_logo(
+    path: str,
+    *,
+    where: str = "main",
+    width: int | None = None,
+    use_container_width: bool = False,
+):
+    """
+    Logo gösterimini bozuk dosya / farklı Streamlit sürümü durumlarında da çökmeden yönetir.
+    """
+    target = st.sidebar if where == "sidebar" else st
+
+    if not path or not os.path.exists(path):
+        return
+
+    # 1) byte ile (en stabil)
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        _image_compat(target, data, width=width, use_container_width=use_container_width)
+        return
+    except Exception:
+        pass
+
+    # 2) PIL fallback
+    try:
+        img = Image.open(path)
+        img.load()
+        _image_compat(target, img, width=width, use_container_width=use_container_width)
+    except UnidentifiedImageError:
+        target.error("Logo dosyası geçerli bir PNG/JPG değil veya bozuk.")
+    except Exception as e:
+        target.error(f"Logo yüklenemedi: {e}")
+
+
+# ----------------------------
+# Header (SINGLE) : Sidebar logo + Top banner + Title
+# ----------------------------
+# Sidebar logo
+safe_show_logo(LOGO_PATH, where="sidebar", width=220)
+
+# Top banner logo (container width)
+safe_show_logo(LOGO_PATH, where="main", width=None, use_container_width=True)
+
+st.markdown("<h1 style='text-align:center; margin:0;'>SynerCardioConsult</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='text-align:center; color:gray; margin-top:6px;'>Preoperative Cardiology Consultation Tool</p>",
+    unsafe_allow_html=True
+)
+st.divider()
 
 
 # ----------------------------
@@ -114,11 +206,14 @@ def load_drug_list():
             import pandas as pd
 
             df = pd.read_csv(csv_path)
+            if df.empty:
+                return DEFAULT_DRUGS, "İlaç listesi: varsayılan (CSV boş)"
             if "drug_name" in df.columns:
                 drugs = df["drug_name"].dropna().astype(str).unique().tolist()
             else:
                 drugs = df.iloc[:, 0].dropna().astype(str).unique().tolist()
-            drugs = sorted(set([d.strip() for d in drugs if d.strip()]))
+
+            drugs = sorted(set([d.strip() for d in drugs if d and str(d).strip()]))
             if drugs:
                 return drugs, f"İlaç listesi: data/sgk_ilaclar.csv ({len(drugs)} kayıt)"
         except Exception as e:
@@ -428,29 +523,6 @@ def get_af_rate_control_text(has_af: str, hr: int, has_hf: str, lvef: str, curre
     return "\n".join(lines) + "\n"
 
 
-def get_postop_af_risk_text(age: int, has_hf: str, has_ckd: str, surgery_risk: str, hr: int) -> str:
-    flags = 0
-    if age >= 70:
-        flags += 1
-    if has_hf == "Evet":
-        flags += 1
-    if has_ckd == "Evet":
-        flags += 1
-    if surgery_risk == "Yüksek":
-        flags += 1
-    if hr >= 100:
-        flags += 1
-
-    if flags >= 3:
-        risk_level = "artmış"
-    elif flags == 2:
-        risk_level = "orta"
-    else:
-        risk_level = "düşük/orta"
-
-    return f"- Postop AF/aritmi riski: {risk_level}. İlk 48–72 saatte ritim/HR ve elektrolitlerin yakın izlenmesi önerilir."
-
-
 # ----------------------------
 # Antiplatelet monotherapy preop plan
 # ----------------------------
@@ -638,50 +710,8 @@ I) Sonuç / Plan
 
 
 # ----------------------------
-# Streamlit UI — SINGLE PAGE (Branding + Logo)
-# Optimized for 1600x350 transparent PNG logo
-# ----------------------------
-
-import streamlit as st
-import os
-
-LOGO_PATH = "assets/logo.png"
-
-st.set_page_config(
-    page_title="SynerCardioConsult",
-    page_icon=LOGO_PATH if os.path.exists(LOGO_PATH) else "🫀",
-    layout="centered"
-)
-
-# Sidebar logo
-if os.path.exists(LOGO_PATH):
-    st.sidebar.image(LOGO_PATH, width=220)
-
-# Main header logo (application width)
-if os.path.exists(LOGO_PATH):
-    st.image(LOGO_PATH, use_container_width=True)
-
-# Centered title
-st.markdown(
-"""
-<h1 style='text-align:center; margin-top:10px;'>
-SynerCardioConsult
-</h1>
-""",
-unsafe_allow_html=True
-)
-
-# Centered subtitle
-st.markdown(
-"""
-<p style='text-align:center; font-size:18px; color:gray;'>
-Preoperative Cardiology Consultation Tool
-</p>
-""",
-unsafe_allow_html=True
-)
-
 # rules/dapt.yaml var mı?
+# ----------------------------
 if not os.path.exists("rules/dapt.yaml"):
     st.error("rules/dapt.yaml bulunamadı. Repo içinde rules/dapt.yaml yolunu kontrol et.")
     st.stop()
@@ -790,7 +820,11 @@ with st.expander("1) Hasta Yaş, Cerrahi ve Klinik Bilgiler", expanded=True):
 
     colr1, colr2 = st.columns(2)
     with colr1:
-        rcri_high_risk_surgery = st.checkbox(RCRI_ITEMS_TR["high_risk_surgery"], value=default_high_risk_surgery, key="rcri_high_risk_surgery")
+        rcri_high_risk_surgery = st.checkbox(
+            RCRI_ITEMS_TR["high_risk_surgery"],
+            value=default_high_risk_surgery,
+            key="rcri_high_risk_surgery",
+        )
         rcri_ihd = st.checkbox(RCRI_ITEMS_TR["ihd"], value=(has_cad == "Evet"), key="rcri_ihd")
         rcri_chf = st.checkbox(RCRI_ITEMS_TR["chf"], value=(has_hf == "Evet"), key="rcri_chf")
     with colr2:
@@ -855,10 +889,15 @@ with st.expander("1) Hasta Yaş, Cerrahi ve Klinik Bilgiler", expanded=True):
 
 
 # ----------------------------
-# 2) Tool-1 (DAPT) -> only if PCI <1 year
+# Tool init (after shared inputs)
 # ----------------------------
 show_tool1 = (has_cad == "Evet") and (pci_time == "<1 yıl")
+show_tool2 = (has_af == "Evet") or (has_mech_valve_ui == "Evet")
 
+
+# ----------------------------
+# 2) Tool-1 (DAPT) -> only if PCI <1 year
+# ----------------------------
 with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_tool1):
     if not show_tool1:
         if has_cad != "Evet":
@@ -889,7 +928,6 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
         st.markdown("---")
         answers = st.session_state["answers"]
 
-        # YAML çoğunlukla answers["p2y12_agent"] bekler → map'liyoruz
         if p2y12_agent_ui and p2y12_agent_ui != "Bilinmiyor":
             answers["p2y12_agent"] = p2y12_agent_ui
         if aspirin_dose and aspirin_dose != "Bilinmiyor":
@@ -926,8 +964,6 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
 # ----------------------------
 # 3) Tool-2 (OAK/NOAC)
 # ----------------------------
-show_tool2 = (has_af == "Evet") or (has_mech_valve_ui == "Evet")
-
 oac_agent = "Bilinmiyor"
 bleed_risk_oac = "Düşük-Orta"
 very_high_bleed = False
@@ -1032,7 +1068,6 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 + RCRI birleşik)", exp
         # Tool-1 auto
         if show_tool1:
             answers = st.session_state.get("answers", {})
-            # mapping (konsültasyon butonunda da garanti)
             if st.session_state.get("p2y12_agent_ui", "Bilinmiyor") != "Bilinmiyor":
                 answers["p2y12_agent"] = st.session_state.get("p2y12_agent_ui")
             if st.session_state.get("aspirin_dose", "Bilinmiyor") != "Bilinmiyor":
@@ -1171,12 +1206,14 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 + RCRI birleşik)", exp
         )
         st.text_area("Kopyalanabilir çıktı", note, height=760)
 
-    # ----------------------------
-# Footer (Always visible)
+
 # ----------------------------
+# FOOTER (always visible)
+# ----------------------------
+st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
 
 st.markdown(
-"""
+    """
 <style>
 .footer {
 position: fixed;
@@ -1189,12 +1226,13 @@ text-align: center;
 padding: 10px;
 font-size: 13px;
 border-top: 1px solid #e6e6e6;
+z-index: 9999;
 }
 </style>
 
 <div class="footer">
-SynerCardioConsult v1.0 | © 2026  Halil Siner,MD – All rights reserved
+<b>SynerCardioConsult</b> v1.0 | © 2026 Dr. Halil Siner – All rights reserved
 </div>
 """,
-unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
