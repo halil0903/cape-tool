@@ -199,7 +199,6 @@ def esc_rcri_pathway_summary(
     poor_fc = functional_capacity == "<4 MET"
     unknown_fc = functional_capacity == "Bilinmiyor"
 
-    # "active/unstable" basit bayrak
     unstable_flag = bool(has_active_cardiac_symptoms)
 
     workup: list[str] = []
@@ -214,7 +213,9 @@ def esc_rcri_pathway_summary(
         )
 
     if unstable_flag:
-        pathway_lines.append("Aktif/önemli semptom varsa → öncelik kardiyak stabilizasyon ve endikasyona göre ileri değerlendirme.")
+        pathway_lines.append(
+            "Aktif/önemli semptom varsa → öncelik kardiyak stabilizasyon ve endikasyona göre ileri değerlendirme."
+        )
         workup.append("Kardiyoloji değerlendirmesi (management-changing yaklaşım).")
         workup.append("Endikasyona göre TTE (özellikle KY/dispne/üfürüm/EF bilinmiyor ise).")
         if high_risk_surg or intermediate_surg:
@@ -238,10 +239,14 @@ def esc_rcri_pathway_summary(
             workup.append("Klinik/endikasyona göre TTE (EF/kapak hastalığı/dispne varlığında öncelikli).")
 
         if high_risk_surg or rcri_score >= 2 or (poor_fc or unknown_fc):
-            workup.append("BNP/NT-proBNP (özellikle ≥65 yaş veya orta/yüksek risk cerrahide risk katmanlaması için düşünülebilir).")
+            workup.append(
+                "BNP/NT-proBNP (özellikle ≥65 yaş veya orta/yüksek risk cerrahide risk katmanlaması için düşünülebilir)."
+            )
 
         if (high_risk_surg or rcri_score >= 2) and (poor_fc or unknown_fc) and urgency != "Acil":
-            workup.append("Efor kapasitesi düşük/bilinmiyor + yüksek/orta risk: sadece sonucu değiştirecekse non-invaziv iskemi testi düşünülebilir.")
+            workup.append(
+                "Efor kapasitesi düşük/bilinmiyor + yüksek/orta risk: sadece sonucu değiştirecekse non-invaziv iskemi testi düşünülebilir."
+            )
 
         pathway_lines.append("Test seçimi: sadece sonucu/tedaviyi değiştirecek (management-changing) ise.")
         return "\n".join([f"- {x}" for x in pathway_lines]), workup
@@ -633,10 +638,48 @@ I) Sonuç / Plan
 
 
 # ----------------------------
-# Streamlit UI — SINGLE PAGE
+# Streamlit UI — SINGLE PAGE (Branding + Logo)
+# Optimized for 1600x350 transparent PNG logo
 # ----------------------------
-st.set_page_config(page_title="CAPE Tool (Tek Sayfa)", layout="centered")
-st.title("CAPE – Preop Kardiyoloji Karar Destek (Tek Sayfa)")
+
+import streamlit as st
+import os
+
+LOGO_PATH = "assets/logo.png"
+
+st.set_page_config(
+    page_title="SynerCardioConsult",
+    page_icon=LOGO_PATH if os.path.exists(LOGO_PATH) else "🫀",
+    layout="centered"
+)
+
+# Sidebar logo
+if os.path.exists(LOGO_PATH):
+    st.sidebar.image(LOGO_PATH, width=220)
+
+# Main header logo (application width)
+if os.path.exists(LOGO_PATH):
+    st.image(LOGO_PATH, use_container_width=True)
+
+# Centered title
+st.markdown(
+"""
+<h1 style='text-align:center; margin-top:10px;'>
+SynerCardioConsult
+</h1>
+""",
+unsafe_allow_html=True
+)
+
+# Centered subtitle
+st.markdown(
+"""
+<p style='text-align:center; font-size:18px; color:gray;'>
+Preoperative Cardiology Consultation Tool
+</p>
+""",
+unsafe_allow_html=True
+)
 
 # rules/dapt.yaml var mı?
 if not os.path.exists("rules/dapt.yaml"):
@@ -846,7 +889,7 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
         st.markdown("---")
         answers = st.session_state["answers"]
 
-        # ✅ YAML çoğunlukla answers["p2y12_agent"] bekler → map'liyoruz
+        # YAML çoğunlukla answers["p2y12_agent"] bekler → map'liyoruz
         if p2y12_agent_ui and p2y12_agent_ui != "Bilinmiyor":
             answers["p2y12_agent"] = p2y12_agent_ui
         if aspirin_dose and aspirin_dose != "Bilinmiyor":
@@ -875,7 +918,6 @@ with st.expander("2) Tool-1: DAPT (yalnızca PCI <1 yıl ise)", expanded=show_to
             if dapt_result.get("class"):
                 st.info(f"Öneri sınıfı: {dapt_result['class']}")
 
-            # ✅ FIX: nested expander yok. Checkbox ile aç/kapa.
             show_raw = st.checkbox("Ham yanıtları göster (Tool-1)", value=False, key="show_raw_tool1")
             if show_raw:
                 st.json(answers)
@@ -1128,3 +1170,31 @@ with st.expander("4) Konsültasyon Notu (Tool-1 + Tool-2 + RCRI birleşik)", exp
             esc_workup_block=esc_workup_block,
         )
         st.text_area("Kopyalanabilir çıktı", note, height=760)
+
+    # ----------------------------
+# Footer (Always visible)
+# ----------------------------
+
+st.markdown(
+"""
+<style>
+.footer {
+position: fixed;
+left: 0;
+bottom: 0;
+width: 100%;
+background-color: #f8f9fa;
+color: #6c757d;
+text-align: center;
+padding: 10px;
+font-size: 13px;
+border-top: 1px solid #e6e6e6;
+}
+</style>
+
+<div class="footer">
+SynerCardioConsult v1.0 | © 2026  Halil Siner,MD – All rights reserved
+</div>
+""",
+unsafe_allow_html=True
+)
